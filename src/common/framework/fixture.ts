@@ -48,6 +48,18 @@ export class Fixture {
     return this._params;
   }
 
+  setParams(params: TestParams) {
+    this._params = params;
+  }
+
+  /**
+   * @returns itself, the fixture for the test. Override this to narrow the type
+   * of the fixture to prevent calling certain methods.
+   */
+  forTest(): this {
+    return this;
+  }
+
   // This has to be a member function instead of an async `createFixture` function, because
   // we need to be able to ergonomically override it in subclasses.
   /**

@@ -69,7 +69,9 @@ export type FixtureClass<F extends Fixture = Fixture> = new (
   log: TestCaseRecorder,
   params: TestParams
 ) => F;
-type TestFn<F extends Fixture, P extends {}> = (t: F & { params: P }) => Promise<void> | void;
+type TestFn<F extends Fixture, P extends {}> = (
+  t: ReturnType<F['forTest']> & { params: P }
+) => Promise<void> | void;
 type BeforeFn<F extends Fixture, P extends {}> = (t: F & { params: P }) => Promise<void> | void;
 
 export class TestGroup<F extends Fixture> implements TestGroupBuilder<F> {
@@ -375,7 +377,7 @@ class RunCaseSpecific implements RunCase {
 
   async runTest(
     rec: TestCaseRecorder,
-    params: {},
+    inst: Fixture,
     throwSkip: boolean,
     expectedStatus: Expectation
   ): Promise<void> {
@@ -384,23 +386,9 @@ class RunCaseSpecific implements RunCase {
       if (expectedStatus === 'skip') {
         throw new SkipTestCase('Skipped by expectations');
       }
-      const inst = new this.fixture(rec, params);
-
-      try {
-        await inst.doInit();
-        if (this.beforeFn) {
-          await this.beforeFn(inst as Fixture & { params: {} });
-        }
-        await this.fn(inst as Fixture & { params: {} });
-      } finally {
-        // Runs as long as constructor succeeded, even if initialization or the test failed.
-        await inst.doFinalize();
-      }
+      await this.fn(inst as Fixture & { params: {} });
     } catch (ex) {
-      // There was an exception from constructor, init, test, or finalize.
-      // An error from init or test may have been a SkipTestCase.
-      // An error from finalize may have been an eventualAsyncExpectation failure
-      // or unexpected validation/OOM error from the GPUDevice.
+      // There was an exception from the test which may have been a SkipTestCase.
       if (throwSkip && ex instanceof SkipTestCase) {
         throw ex;
       }
@@ -446,40 +434,66 @@ class RunCaseSpecific implements RunCase {
       return didSeeFail ? 'fail' : 'pass';
     };
 
-    rec.start();
-    if (this.subcases) {
-      let totalCount = 0;
-      let skipCount = 0;
-      for (const subParams of this.subcases) {
-        rec.info(new Error('subcase: ' + stringifyPublicParams(subParams)));
-        try {
-          const params = mergeParams(this.params, subParams);
-          const subcaseQuery = new TestQuerySingleCase(
-            selfQuery.suite,
-            selfQuery.filePathParts,
-            selfQuery.testPathParts,
-            params
-          );
-          await this.runTest(rec, params, true, getExpectedStatus(subcaseQuery));
-        } catch (ex) {
-          if (ex instanceof SkipTestCase) {
-            // Convert SkipTestCase to info messages
-            ex.message = 'subcase skipped: ' + ex.message;
-            rec.info(ex);
-            ++skipCount;
-          } else {
-            // Since we are catching all error inside runTest(), this should never happen
-            rec.threw(ex);
-          }
+    try {
+      rec.start();
+      const inst = new this.fixture(rec, this.params);
+      try {
+        await inst.doInit();
+        if (this.beforeFn) {
+          await this.beforeFn(inst as Fixture & { params: {} });
         }
-        ++totalCount;
+
+        if (this.subcases) {
+          let totalCount = 0;
+          let skipCount = 0;
+          for (const subParams of this.subcases) {
+            rec.info(new Error('subcase: ' + stringifyPublicParams(subParams)));
+            try {
+              const params = mergeParams(this.params, subParams);
+              const subcaseQuery = new TestQuerySingleCase(
+                selfQuery.suite,
+                selfQuery.filePathParts,
+                selfQuery.testPathParts,
+                params
+              );
+              inst.setParams(params);
+              await this.runTest(rec, inst, /* throwSkip */ true, getExpectedStatus(subcaseQuery));
+            } catch (ex) {
+              if (ex instanceof SkipTestCase) {
+                // Convert SkipTestCase to info messages
+                ex.message = 'subcase skipped: ' + ex.message;
+                rec.info(ex);
+                ++skipCount;
+              } else {
+                // Since we are catching all error inside runTest(), this should never happen
+                rec.threw(ex);
+              }
+            }
+            ++totalCount;
+          }
+          if (skipCount === totalCount) {
+            rec.skipped(new SkipTestCase('all subcases were skipped'));
+          }
+        } else {
+          await this.runTest(
+            rec,
+            inst.forTest(),
+            /* throwSkip */ false,
+            getExpectedStatus(selfQuery)
+          );
+        }
+      } finally {
+        // Runs as long as the fixture constructor succeeded, even if initialization or the test failed.
+        await inst.doFinalize();
       }
-      if (skipCount === totalCount) {
-        rec.skipped(new SkipTestCase('all subcases were skipped'));
-      }
-    } else {
-      await this.runTest(rec, this.params, false, getExpectedStatus(selfQuery));
+    } catch (ex) {
+      // There was an exception from fixture constructor, init, beforeFn, or test.
+      // An error from beforeFn may have been SkipTestCase.
+      // An error from finalize may have been an eventualAsyncExpectation failure
+      // or unexpected validation/OOM error from the GPUDevice.
+      rec.threw(ex);
+    } finally {
+      rec.finish();
     }
-    rec.finish();
   }
 }

@@ -62,6 +62,15 @@ export function initUncanonicalizedDeviceDescriptor(
   }
 }
 
+type DisallowedMethodsInTest = {
+  // Disallow tests to use these methods. They must be called in
+  // the test `before` function.
+  selectDeviceOrSkipTestCase: never;
+  selectMismatchedDeviceOrSkipTestCase: never;
+  selectDeviceForQueryTypeOrSkipTestCase: never;
+  selectDeviceForTextureFormatOrSkipTestCase: never;
+};
+
 /**
  * Base fixture for WebGPU tests.
  */
@@ -75,6 +84,10 @@ export class GPUTest extends Fixture {
   //create device mismatched objects.
   private mismatchedProvider: DeviceProvider | undefined;
   private mismatchedAcquiredDevice: GPUDevice | undefined;
+
+  forTest(): this & DisallowedMethodsInTest {
+    return this as this & DisallowedMethodsInTest;
+  }
 
   /** GPUDevice for the test to use. */
   get device(): GPUDevice {
